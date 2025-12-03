@@ -4,8 +4,8 @@ import { supabase } from '../supabaseClient';
 import RouteCreator from './RouteCreator';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
-// ⚠️ PASTE YOUR MAPBOX TOKEN HERE
-const MAPBOX_TOKEN = 'pk.eyJ1IjoiYWJpbWFueXUta2EiLCJhIjoiY21odXFnc3hqMDJkdDJrczJvczVucm80biJ9.3USM9UM5xJ5hyEp0vU9H0A';
+// ⚠️ UPDATED: Uses the Environment Variable now
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
 export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, session }) {
   const mapRef = useRef(null);
@@ -32,12 +32,10 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
   // 2. WATCH FOR "VIEW SAVED ROUTE" (From Feed)
   useEffect(() => {
     if (viewingRoute && mapRef.current) {
-      // Clear manual drawing
       setPoints([]);
       setRouteGeoJSON(null);
       setRouteStats(null);
 
-      // Fly to start of route
       if (viewingRoute.path && viewingRoute.path.coordinates) {
         const startCoords = viewingRoute.path.coordinates[0];
         mapRef.current.flyTo({
@@ -153,7 +151,6 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
           </Source>
         )}
 
-        {/* --- PURPLE SAVED ROUTE LAYER --- */}
         {viewingRoute && viewingRoute.path && (
           <Source id="view-route" type="geojson" data={{ type: 'Feature', geometry: viewingRoute.path }}>
             <Layer

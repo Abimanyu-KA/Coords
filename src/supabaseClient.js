@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://bvdabrjvckbjkaddwcza.supabase.co'
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2ZGFicmp2Y2tiamthZGR3Y3phIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ2MTgwNTUsImV4cCI6MjA4MDE5NDA1NX0.RO3TFw7LIkLFV9fG7H6lJXvh3TsVHIRYLYKtLmFKfB8'
+// Now it looks for the variable we set in Vercel (and .env)
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_KEY
 
 export const supabase = createClient(supabaseUrl, supabaseKey)

@@ -1,31 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, X, MapPin, Plus, Navigation, CircleDot, ArrowDown } from 'lucide-react';
 
-// ⚠️ PASTE YOUR MAPBOX TOKEN HERE
-const MAPBOX_TOKEN = 'pk.eyJ1IjoiYWJpbWFueXUta2EiLCJhIjoiY21odXFnc3hqMDJkdDJrczJvczVucm80biJ9.3USM9UM5xJ5hyEp0vU9H0A';
+// ⚠️ UPDATED: Uses the Environment Variable
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
 export default function SearchBox({ onLocationSelect, onRouteRequest, onClose }) {
-  const [mode, setMode] = useState('single'); // 'single' | 'route'
+  const [mode, setMode] = useState('single'); 
   
-  // Waypoints for Route Mode
   const [waypoints, setWaypoints] = useState([
     { id: 1, text: '', coords: null, placeholder: 'Start Location' },
     { id: 2, text: '', coords: null, placeholder: 'Destination' }
   ]);
   
-  // Query for Single Mode
   const [singleQuery, setSingleQuery] = useState('');
-
-  // Search State
-  const [activeInputIndex, setActiveInputIndex] = useState(null); // -1 for single, 0,1,2... for route
+  const [activeInputIndex, setActiveInputIndex] = useState(null); 
   const [results, setResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // --- SEARCH FUNCTION ---
   const handleSearch = async (text, index) => {
     setActiveInputIndex(index);
-    
-    // Update State
     if (index === -1) {
       setSingleQuery(text);
     } else {
@@ -53,27 +46,22 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
     setIsSearching(false);
   };
 
-  // --- SELECTION FUNCTION ---
   const selectResult = (place) => {
     if (activeInputIndex === -1) {
-      // Single Mode Selection
       setSingleQuery(place.text);
       onLocationSelect({ name: place.text, coords: place.center });
-      onClose(); // Close after picking
+      onClose(); 
     } else {
-      // Route Mode Selection
       const newWaypoints = [...waypoints];
       newWaypoints[activeInputIndex].text = place.text;
       newWaypoints[activeInputIndex].coords = place.center;
       setWaypoints(newWaypoints);
-      setResults([]); // Clear dropdown
+      setResults([]); 
     }
   };
 
-  // --- ROUTE MANIPULATION ---
   const addStop = () => {
     const newWaypoints = [...waypoints];
-    // Insert before Destination
     newWaypoints.splice(newWaypoints.length - 1, 0, {
       id: Date.now(),
       text: '',
@@ -93,8 +81,6 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
     onClose();
   };
 
-  // --- HELPER COMPONENT: THE SUGGESTION LIST ---
-  // We make this a tiny component so we can render it under ANY input easily
   const SuggestionsList = () => {
     if (results.length === 0) return null;
 
@@ -122,7 +108,6 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
   return (
     <div className="absolute top-0 left-0 w-full h-full sm:h-auto sm:max-w-md sm:m-4 bg-black/95 backdrop-blur-xl sm:rounded-2xl border-b sm:border border-zinc-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-top-2">
       
-      {/* HEADER: TABS & CLOSE */}
       <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-zinc-800">
         <div className="flex gap-6">
           <button 
@@ -143,10 +128,7 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
         </button>
       </div>
 
-      {/* BODY: INPUTS */}
       <div className="p-4 space-y-4">
-        
-        {/* --- SINGLE MODE UI --- */}
         {mode === 'single' && (
           <div className="relative group">
             <Search className="absolute left-3 top-3.5 text-zinc-500 group-focus-within:text-white transition-colors" size={18} />
@@ -159,22 +141,18 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
               onChange={(e) => handleSearch(e.target.value, -1)}
               onFocus={() => setActiveInputIndex(-1)}
             />
-            {/* Suggestion Dropdown for Single Mode */}
             {activeInputIndex === -1 && <SuggestionsList />}
           </div>
         )}
 
-        {/* --- ROUTE MODE UI --- */}
         {mode === 'route' && (
           <div className="space-y-4">
             <div className="space-y-3 relative">
-              {/* Vertical dotted line connecting dots */}
               <div className="absolute left-[15px] top-8 bottom-8 w-0.5 bg-zinc-800 z-0"></div>
 
               {waypoints.map((wp, index) => (
                 <div key={wp.id} className={`relative ${activeInputIndex === index ? 'z-20' : 'z-10'}`}>
                   <div className="flex items-center gap-3">
-                    {/* Icon Logic */}
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border-2 ${
                       index === 0 ? 'border-green-500/30 bg-green-500/10 text-green-500' :
                       index === waypoints.length - 1 ? 'border-red-500/30 bg-red-500/10 text-red-500' :
@@ -183,7 +161,6 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
                       <CircleDot size={14} fill="currentColor" className="opacity-50" />
                     </div>
 
-                    {/* Input Field */}
                     <div className="relative flex-1">
                       <input
                         type="text"
@@ -193,7 +170,6 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
                         onChange={(e) => handleSearch(e.target.value, index)}
                         onFocus={() => setActiveInputIndex(index)}
                       />
-                      {/* Suggestion Dropdown SPECIFIC to this input */}
                       {activeInputIndex === index && <SuggestionsList />}
                     </div>
                   </div>
@@ -201,7 +177,6 @@ export default function SearchBox({ onLocationSelect, onRouteRequest, onClose })
               ))}
             </div>
 
-            {/* Action Buttons */}
             <div className="flex gap-3 pt-2">
               <button 
                 onClick={addStop} 
