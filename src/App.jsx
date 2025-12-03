@@ -5,7 +5,8 @@ import FeedPanel from './components/FeedPanel';
 import SearchBox from './components/SearchBox';
 import Auth from './components/Auth';
 import ProfilePanel from './components/ProfilePanel';
-import { Search, Compass } from 'lucide-react';
+import GroupPanel from './components/GroupPanel';
+import { Search, Compass, User } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 export default function App() {
@@ -16,24 +17,28 @@ export default function App() {
   const [showFeed, setShowFeed] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showGroups, setShowGroups] = useState(false);
   
   // Map State
   const [flyToLocation, setFlyToLocation] = useState(null);
   const [routeWaypoints, setRouteWaypoints] = useState(null); 
-  const [viewingRoute, setViewingRoute] = useState(null); // <--- New State
+  const [viewingRoute, setViewingRoute] = useState(null);
   
   const [dbConnected, setDbConnected] = useState(false);
 
   useEffect(() => {
+    // 1. Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
     });
 
+    // 2. Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
 
+    // 3. Check DB connection
     supabase.from('locations').select('count', { count: 'exact', head: true })
       .then(({ error }) => !error && setDbConnected(true));
 
@@ -51,7 +56,7 @@ export default function App() {
       <MapBoard 
         flyToLocation={flyToLocation} 
         routeWaypoints={routeWaypoints} 
-        viewingRoute={viewingRoute} // <--- Pass the selected route to map
+        viewingRoute={viewingRoute}
         session={session}
       /> 
 
@@ -60,17 +65,28 @@ export default function App() {
         
         {!showSearch && (
           <header className="bg-black/80 backdrop-blur-md border-b border-zinc-900 px-4 py-4 pointer-events-auto">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between">
+              
+              {/* Left: Search & Compass */}
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => setShowSearch(true)}
+                  className="p-2 bg-zinc-900 rounded-full text-zinc-400 border border-zinc-800 hover:text-white"
+                >
+                  <Search size={20} />
+                </button>
+                <Compass className={`text-white ${dbConnected ? 'animate-pulse' : ''}`} size={24} />
+                <h1 className="text-xl font-bold tracking-tighter">COORDS.</h1>
+              </div>
+
+              {/* Right: Profile Button */}
               <button 
-                onClick={() => setShowSearch(true)}
+                onClick={() => setShowProfile(true)}
                 className="p-2 bg-zinc-900 rounded-full text-zinc-400 border border-zinc-800 hover:text-white"
               >
-                <Search size={20} />
+                <User size={20} />
               </button>
 
-              <Compass className={`text-white ${dbConnected ? 'animate-pulse' : ''}`} size={24} />
-              <h1 className="text-xl font-bold tracking-tighter">COORDS.</h1>
-              <div className="flex-1"></div>
             </div>
           </header>
         )}
@@ -82,7 +98,7 @@ export default function App() {
               onLocationSelect={(loc) => {
                 setFlyToLocation(loc);
                 setRouteWaypoints(null); 
-                setViewingRoute(null); // Clear viewing route if searching
+                setViewingRoute(null);
               }}
               onRouteRequest={(waypoints) => {
                 setRouteWaypoints(waypoints);
@@ -94,14 +110,15 @@ export default function App() {
         )}
       </div>
 
+      {/* PANELS */}
       <FeedPanel 
         isOpen={showFeed} 
         onClose={() => setShowFeed(false)}
         onRouteSelect={(route) => {
-          setViewingRoute(route); // <--- Set the viewing route
+          setViewingRoute(route);
           setFlyToLocation(null);
           setRouteWaypoints(null);
-          setShowFeed(false); // Close panel
+          setShowFeed(false);
         }} 
       />
       
@@ -111,9 +128,16 @@ export default function App() {
         session={session} 
       />
 
+      <GroupPanel 
+        isOpen={showGroups} 
+        onClose={() => setShowGroups(false)} 
+        session={session} 
+      />
+
+      {/* NAVBAR */}
       <Navbar 
         onFeedClick={() => setShowFeed(!showFeed)} 
-        onProfileClick={() => setShowProfile(!showProfile)} 
+        onGroupClick={() => setShowGroups(!showGroups)} 
       />
     </div>
   );
