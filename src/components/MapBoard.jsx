@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import Map, { Source, Layer, Marker, NavigationControl, GeolocateControl } from 'react-map-gl';
 import { supabase } from '../supabaseClient';
 import RouteCreator from './RouteCreator';
-import { Radio, Users } from 'lucide-react'; // New Icons
+import { Radio, Users, Activity } from 'lucide-react'; 
+import * as turf from '@turf/turf'; // <--- IMPORT MATH LIBRARY
 import 'mapbox-gl/dist/mapbox-gl.css';
 
-// ⚠️ PASTE YOUR MAPBOX TOKEN HERE
+// ⚠️ PASTE YOUR MAPBOX TOKEN
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
 export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, session }) {
@@ -14,107 +15,77 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
     longitude: 80.2707, latitude: 13.0827, zoom: 12
   });
 
-  // Basic Map State
   const [points, setPoints] = useState([]); 
   const [routeGeoJSON, setRouteGeoJSON] = useState(null);
   const [routeStats, setRouteStats] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // --- 📡 RADAR STATE (The New Stuff) ---
+  // Radar State
   const [isRadarActive, setIsRadarActive] = useState(false);
-  const [otherRiders, setOtherRiders] = useState({}); // Stores other users { 'user_id': {lat, lng} }
-  const channelRef = useRef(null); // Keep the connection alive
+  const [otherRiders, setOtherRiders] = useState({});
+  const channelRef = useRef(null);
 
-  // 1. RADAR LOGIC: Subscribe/Unsubscribe
+  // --- RADAR LOGIC ---
   useEffect(() => {
     if (isRadarActive && session) {
-      // A. JOIN THE CHANNEL
       const channel = supabase.channel('chennai_riders');
-      
       channel
         .on('presence', { event: 'sync' }, () => {
           const state = channel.presenceState();
           const riders = {};
-          
-          // Flatten the weird Presence object structure
           for (const id in state) {
-            if (id !== session.user.id) { // Don't show myself
-               // state[id] is an array of "presences" for that user
-               // We take the latest one (index 0)
-               riders[id] = state[id][0];
-            }
+            if (id !== session.user.id) riders[id] = state[id][0];
           }
           setOtherRiders(riders);
         })
         .subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') {
-            console.log("📡 Radar Online: Connected to grid.");
-            startBroadcasting(channel);
-          }
+          if (status === 'SUBSCRIBED') startBroadcasting(channel);
         });
-
       channelRef.current = channel;
-
     } else {
-      // B. LEAVE THE CHANNEL
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
         setOtherRiders({});
-        console.log("📡 Radar Offline: Disconnected.");
       }
     }
-
-    // Cleanup on unmount
-    return () => {
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
-    };
+    return () => { if (channelRef.current) supabase.removeChannel(channelRef.current); };
   }, [isRadarActive, session]);
 
-  // 2. BROADCAST LOOP: Send my location every 2 seconds
   const startBroadcasting = (channel) => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const { latitude, longitude, heading } = pos.coords;
-        
-        // Send my data to the channel
         channel.track({
           user: session.user.email,
-          lat: latitude,
-          lng: longitude,
-          heading: heading || 0,
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          heading: pos.coords.heading || 0,
           online_at: new Date().toISOString()
         });
       },
       (err) => console.error(err),
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
     );
-
-    // Stop broadcasting when Radar turns off
     return () => navigator.geolocation.clearWatch(watchId);
   };
 
-
-  // --- EXISTING MAP LOGIC (Keep scrolling down) ---
-
-  // 1. WATCH FOR SINGLE SEARCH RESULTS
+  // --- MAP LOGIC ---
   useEffect(() => {
     if (flyToLocation && mapRef.current) {
       mapRef.current.flyTo({ center: flyToLocation.coords, zoom: 14, duration: 2000 });
     }
   }, [flyToLocation]);
 
-  // 2. WATCH FOR "VIEW SAVED ROUTE"
   useEffect(() => {
     if (viewingRoute && mapRef.current) {
       setPoints([]); setRouteGeoJSON(null); setRouteStats(null);
       if (viewingRoute.path && viewingRoute.path.coordinates) {
-        mapRef.current.flyTo({ center: viewingRoute.path.coordinates[0], zoom: 13, duration: 2000 });
+        const start = viewingRoute.path.coordinates[0];
+        mapRef.current.flyTo({ center: start, zoom: 13, duration: 2000 });
       }
     }
   }, [viewingRoute]);
 
-  // 3. WATCH FOR MULTI-POINT REQUESTS
   useEffect(() => {
     if (routeWaypoints && routeWaypoints.length >= 2) {
       const coords = routeWaypoints.map(wp => wp.coords);
@@ -122,10 +93,10 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
       fetchRoute(coords);
       
       if (mapRef.current) {
-        const longitudes = coords.map(c => c[0]);
-        const latitudes = coords.map(c => c[1]);
+        const lngs = coords.map(c => c[0]);
+        const lats = coords.map(c => c[1]);
         mapRef.current.fitBounds(
-          [[Math.min(...longitudes), Math.min(...latitudes)], [Math.max(...longitudes), Math.max(...latitudes)]],
+          [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
           { padding: 100, duration: 2000 }
         );
       }
@@ -144,27 +115,68 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
 
   const fetchRoute = async (coords) => {
     const coordString = coords.map(p => `${p[0]},${p[1]}`).join(';');
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordString}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
+    
+    // ⚡ FIX: Added '&overview=full' for SMOOTH geometry
+    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordString}?geometries=geojson&overview=full&access_token=${MAPBOX_TOKEN}`;
+    
     try {
       const response = await fetch(url);
       const json = await response.json();
       if (!json.routes || json.routes.length === 0) return;
       
       const route = json.routes[0];
-      setRouteGeoJSON({ type: 'Feature', geometry: route.geometry });
+      const geometry = route.geometry;
       
-      const km = (route.distance / 1000).toFixed(1);
+      // --- 🧮 SINUOSITY CALCULATION (THE MATH) ---
+      const line = turf.lineString(geometry.coordinates);
+      const length = turf.length(line, { units: 'kilometers' }); // Actual road distance
+      
+      const startPoint = turf.point(geometry.coordinates[0]);
+      const endPoint = turf.point(geometry.coordinates[geometry.coordinates.length - 1]);
+      const crowDistance = turf.distance(startPoint, endPoint, { units: 'kilometers' }); // Straight line
+      
+      // Sinuosity = Actual / Straight
+      // If start == end (loop), this divides by zero, so we handle that.
+      let sinuosity = crowDistance > 0 ? (length / crowDistance) : 1;
+      
+      // Cap loops or crazy values
+      if (sinuosity > 5) sinuosity = 5; 
+
+      // Determine Vibe
+      let vibe = 'Straight';
+      if (sinuosity > 1.2) vibe = 'Curvy';
+      if (sinuosity > 1.5) vibe = 'Twisty';
+      if (sinuosity > 2.0) vibe = 'Noodle';
+
+      setRouteGeoJSON({ type: 'Feature', geometry: geometry });
+      
       const mins = Math.round(route.duration / 60);
-      setRouteStats({ km, mins });
+      setRouteStats({ 
+        km: length.toFixed(1), 
+        mins,
+        sinuosity: sinuosity.toFixed(2), // Store the score
+        vibe // Store the auto-detected vibe
+      });
+      
       setIsSaving(true); 
     } catch (err) { console.error("Route error", err); }
   };
 
   const handleSaveRoute = async (details) => {
     if (!routeGeoJSON) return;
+    
+    // Auto-fill vibe based on math if user didn't change it manually? 
+    // For now we just trust the user, but we could pass 'routeStats.vibe' as default
+    
     const { error } = await supabase.from('routes').insert({
-      name: details.name, vibe: details.vibe, surface: details.surface, path: routeGeoJSON.geometry, difficulty: 1, created_by: session?.user?.id 
+      name: details.name, 
+      vibe: details.vibe, 
+      surface: details.surface, 
+      path: routeGeoJSON.geometry, 
+      difficulty: 1, 
+      created_by: session?.user?.id 
     });
+
     if (error) alert('Error saving!');
     else {
       alert('Route Saved!');
@@ -187,38 +199,29 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
         <GeolocateControl position="top-right" />
         <NavigationControl position="top-right" showCompass={false} />
 
-        {/* --- 📡 RADAR BUTTON --- */}
+        {/* Radar Button */}
         <div className="absolute top-24 right-2 z-10 flex flex-col gap-2">
           <button 
             onClick={() => setIsRadarActive(!isRadarActive)}
             className={`p-3 rounded-lg shadow-xl border border-zinc-700 transition-all ${
-              isRadarActive 
-                ? 'bg-purple-600 text-white animate-pulse shadow-[0_0_15px_rgba(168,85,247,0.6)]' 
-                : 'bg-black text-zinc-400 hover:text-white'
+              isRadarActive ? 'bg-purple-600 text-white animate-pulse' : 'bg-black text-zinc-400'
             }`}
           >
             {isRadarActive ? <Radio size={20} className="animate-spin-slow" /> : <Users size={20} />}
           </button>
         </div>
 
-        {/* --- RENDER OTHER RIDERS (NEON DOTS) --- */}
+        {/* Radar Dots */}
         {Object.keys(otherRiders).map((key) => {
           const rider = otherRiders[key];
           return (
             <Marker key={key} longitude={rider.lng} latitude={rider.lat}>
-              <div className="flex flex-col items-center">
-                {/* The Dot */}
-                <div className="w-4 h-4 bg-purple-500 rounded-full border-2 border-white shadow-[0_0_10px_#a855f7]"></div>
-                {/* The Label (Email) */}
-                <span className="bg-black/80 text-white text-[10px] px-1 rounded mt-1 backdrop-blur-sm border border-zinc-700">
-                  {rider.user.split('@')[0]}
-                </span>
-              </div>
+              <div className="w-4 h-4 bg-purple-500 rounded-full border-2 border-white shadow-[0_0_10px_#a855f7]"></div>
             </Marker>
           );
         })}
 
-        {/* --- STANDARD MAP LAYERS --- */}
+        {/* Basic Layers */}
         {points.map((p, i) => (
           <Marker key={i} longitude={p[0]} latitude={p[1]} color={i === 0 ? "#4ade80" : "#ef4444"} />
         ))}
@@ -241,16 +244,35 @@ export default function MapBoard({ flyToLocation, routeWaypoints, viewingRoute, 
           </Marker>
         )}
 
+        {/* 📊 UPDATED STATS BUBBLE with Sinuosity */}
         {routeStats && (
-          <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-black border border-zinc-700 px-4 py-2 rounded-full shadow-xl flex gap-3 z-50">
-            <span className="text-white font-bold">{routeStats.km} km</span>
-            <span className="text-zinc-500">|</span>
-            <span className="text-blue-400 font-bold">{routeStats.mins} min</span>
+          <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-black/90 backdrop-blur border border-zinc-700 px-5 py-3 rounded-2xl shadow-2xl flex flex-col items-center gap-1 z-50 min-w-[140px]">
+            
+            {/* Top Row: Basic Stats */}
+            <div className="flex gap-3 text-sm">
+              <span className="text-white font-bold">{routeStats.km} km</span>
+              <span className="text-zinc-600">|</span>
+              <span className="text-blue-400 font-bold">{routeStats.mins} min</span>
+            </div>
+
+            {/* Bottom Row: The Fun Factor */}
+            <div className="flex items-center gap-2 mt-1 pt-1 border-t border-zinc-800 w-full justify-center">
+              <Activity size={12} className={routeStats.sinuosity > 1.2 ? "text-green-400" : "text-zinc-500"} />
+              <span className={`text-xs font-bold uppercase ${
+                routeStats.sinuosity > 1.5 ? "text-purple-400" : 
+                routeStats.sinuosity > 1.2 ? "text-green-400" : "text-zinc-500"
+              }`}>
+                {routeStats.vibe} ({routeStats.sinuosity})
+              </span>
+            </div>
+
           </div>
         )}
 
         {isSaving && (
           <RouteCreator 
+            // We pass the calculated vibe as a suggestion
+            initialVibe={routeStats?.vibe?.toLowerCase()} 
             onSave={handleSaveRoute} 
             onCancel={() => {
               setIsSaving(false); setPoints([]); setRouteGeoJSON(null); setRouteStats(null);
