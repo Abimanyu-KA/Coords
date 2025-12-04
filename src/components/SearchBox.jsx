@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, X, MapPin, Plus, Navigation, CircleDot, ArrowLeft } from 'lucide-react';
+import { Search, X, MapPin, Plus, CircleDot, ArrowLeft } from 'lucide-react';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -27,9 +27,8 @@ export default function SearchBox({
   const [singleQuery, setSingleQuery] = useState(defaultInputValue);
   const [activeInputIndex, setActiveInputIndex] = useState(null); 
   const [results, setResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
 
-  // Sync with parent props
+  // Sync internal state with props
   useEffect(() => {
     if (defaultInputValue) setSingleQuery(defaultInputValue);
   }, [defaultInputValue]);
@@ -45,6 +44,17 @@ export default function SearchBox({
         });
     }
   }, [initialMode, initialDestination]);
+
+  // ⚡ AUTO-TRIGGER ROUTE: Watch waypoints for changes
+  useEffect(() => {
+    if (mode === 'route') {
+      const validPoints = waypoints.filter(wp => wp.coords !== null || wp.isCurrent);
+      // Only auto-request if we have at least 2 valid points and the user isn't currently typing (activeInputIndex is null or suggestions closed)
+      if (validPoints.length >= 2 && results.length === 0) {
+        onRouteRequest(validPoints);
+      }
+    }
+  }, [waypoints, mode, results.length]); // Dependency on results ensures we don't trigger while selecting
 
   const handleSearch = async (text, index) => {
     setActiveInputIndex(index);
@@ -63,7 +73,6 @@ export default function SearchBox({
       return;
     }
 
-    setIsSearching(true);
     try {
       const response = await fetch(
         `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(text)}.json?access_token=${MAPBOX_TOKEN}&autocomplete=true&limit=5`
@@ -73,7 +82,6 @@ export default function SearchBox({
     } catch (error) {
       console.error("Search error:", error);
     }
-    setIsSearching(false);
   };
 
   const selectResult = (place) => {
@@ -81,7 +89,7 @@ export default function SearchBox({
       setSingleQuery(place.text);
       setResults([]); 
       onLocationSelect({ name: place.text, coords: place.center });
-      // NOTE: We do NOT close here, keeping the search context alive
+      // Keep bar visible
     } else {
       const newWaypoints = [...waypoints];
       newWaypoints[activeInputIndex].text = place.text;
@@ -89,6 +97,7 @@ export default function SearchBox({
       newWaypoints[activeInputIndex].isCurrent = false;
       setWaypoints(newWaypoints);
       setResults([]); 
+      // Effect hook will handle onRouteRequest automatically
     }
   };
 
@@ -101,17 +110,6 @@ export default function SearchBox({
       placeholder: 'Add Stop'
     });
     setWaypoints(newWaypoints);
-  };
-
-  const handleRouteGo = () => {
-    const validPoints = waypoints.filter(wp => wp.coords !== null || wp.isCurrent);
-    if (validPoints.length < 2) {
-      alert("Please select a Start and End location.");
-      return;
-    }
-    onRouteRequest(validPoints);
-    // We keep the box open so users can modify the route if needed,
-    // or you can call onClose() here if you prefer it to vanish.
   };
 
   const SuggestionsList = () => {
@@ -140,46 +138,34 @@ export default function SearchBox({
   return (
     <div className="absolute top-0 left-0 w-full h-auto sm:max-w-md sm:m-4 bg-black/95 backdrop-blur-xl sm:rounded-2xl border-b sm:border border-zinc-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-top-2">
       
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-2 border-b border-zinc-800">
+      {/* Clean Header - Removed all text labels */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-2">
         <div className="flex gap-2 items-center">
-          {mode === 'route' && (
+          {mode === 'route' ? (
             <button 
               onClick={() => {
                   setMode('single');
                   onClear(); 
               }}
-              className="p-2 -ml-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-full transition-all flex items-center gap-2"
+              className="p-2 -ml-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-full transition-all"
             >
               <ArrowLeft size={20} />
-              <span className="text-sm font-bold">Back</span>
             </button>
+          ) : (
+            <div className="p-2 -ml-2 text-zinc-500">
+               <Search size={20} />
+            </div>
           )}
         </div>
-        
-        {/* Clear/Close Button */}
-        <button 
-            onClick={() => {
-                setSingleQuery('');
-                onClear();
-                if (onClose) onClose();
-            }}
-            className="p-2 -mr-2 text-zinc-500 hover:text-white hover:bg-zinc-900 rounded-full transition-all"
-        >
-          <X size={20} />
-        </button>
-      </div>
 
-      <div className="p-4 space-y-4">
-        {/* SINGLE MODE */}
+        {/* Search Input - SINGLE MODE - Integrated into Header */}
         {mode === 'single' && (
-          <div className="relative group">
-            <Search className="absolute left-3 top-3.5 text-zinc-500 group-focus-within:text-white transition-colors" size={18} />
+          <div className="flex-1 relative mx-2">
             <input
               autoFocus={false} 
               type="text"
-              placeholder="Where to?"
-              className="w-full bg-zinc-800 text-white pl-10 pr-4 py-3 rounded-xl border border-zinc-700/50 focus:border-white/20 focus:bg-zinc-700 outline-none transition-all placeholder:text-zinc-500 font-medium"
+              placeholder="Search location..."
+              className="w-full bg-transparent text-white px-2 py-2 font-medium text-lg outline-none placeholder:text-zinc-600"
               value={singleQuery}
               onChange={(e) => handleSearch(e.target.value, -1)}
               onFocus={() => setActiveInputIndex(-1)}
@@ -187,48 +173,59 @@ export default function SearchBox({
             {activeInputIndex === -1 && <SuggestionsList />}
           </div>
         )}
+        
+        {/* Close Button */}
+        <button 
+            onClick={() => {
+                setSingleQuery('');
+                onClear();
+                if(onClose) onClose();
+            }}
+            className="p-2 -mr-2 text-zinc-500 hover:text-white hover:bg-zinc-900 rounded-full transition-all"
+        >
+          <X size={20} />
+        </button>
+      </div>
 
-        {/* ROUTE MODE */}
-        {mode === 'route' && (
-          <div className="space-y-4">
-            <div className="space-y-3 relative">
-              <div className="absolute left-[15px] top-8 bottom-8 w-0.5 bg-zinc-700 z-0"></div>
-              {waypoints.map((wp, index) => (
-                <div key={wp.id} className={`relative ${activeInputIndex === index ? 'z-20' : 'z-10'}`}>
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border-2 bg-black z-10 ${
-                      index === 0 ? 'border-green-500 text-green-500' :
-                      index === waypoints.length - 1 ? 'border-red-500 text-red-500' :
-                      'border-yellow-500 text-yellow-500'
-                    }`}>
-                      <CircleDot size={12} fill="currentColor" />
-                    </div>
-                    <div className="relative flex-1">
-                      <input
-                        type="text"
-                        placeholder={wp.placeholder}
-                        className="w-full bg-zinc-800 text-white px-4 py-3 rounded-xl border border-zinc-700/50 focus:border-white/20 focus:bg-zinc-700 outline-none transition-all placeholder:text-zinc-500 text-sm"
-                        value={wp.text}
-                        onChange={(e) => handleSearch(e.target.value, index)}
-                        onFocus={() => setActiveInputIndex(index)}
-                      />
-                      {activeInputIndex === index && <SuggestionsList />}
-                    </div>
+      {/* ROUTE MODE INPUTS */}
+      {mode === 'route' && (
+        <div className="px-4 pb-4 space-y-3 animate-in slide-in-from-top-5">
+          <div className="space-y-3 relative mt-1">
+            <div className="absolute left-[15px] top-4 bottom-4 w-0.5 bg-zinc-700 z-0"></div>
+            {waypoints.map((wp, index) => (
+              <div key={wp.id} className={`relative ${activeInputIndex === index ? 'z-20' : 'z-10'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 border-2 bg-black z-10 ${
+                    index === 0 ? 'border-green-500 text-green-500' :
+                    index === waypoints.length - 1 ? 'border-red-500 text-red-500' :
+                    'border-yellow-500 text-yellow-500'
+                  }`}>
+                    <CircleDot size={12} fill="currentColor" />
+                  </div>
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      placeholder={wp.placeholder}
+                      className="w-full bg-zinc-800 text-white px-4 py-3 rounded-xl border border-zinc-700/50 focus:border-white/20 focus:bg-zinc-700 outline-none transition-all placeholder:text-zinc-500 text-sm"
+                      value={wp.text}
+                      onChange={(e) => handleSearch(e.target.value, index)}
+                      onFocus={() => setActiveInputIndex(index)}
+                    />
+                    {activeInputIndex === index && <SuggestionsList />}
                   </div>
                 </div>
-              ))}
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button onClick={addStop} className="flex-1 py-3 bg-zinc-800/50 border border-zinc-700/50 text-zinc-400 font-medium rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-800 hover:text-white transition-all text-sm">
-                <Plus size={16} /> Add Stop
-              </button>
-              <button onClick={handleRouteGo} className="flex-1 py-3 bg-white text-black font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-200 transition-all shadow-lg shadow-white/5">
-                <Navigation size={16} /> GO
-              </button>
-            </div>
+              </div>
+            ))}
           </div>
-        )}
-      </div>
+          
+          <div className="flex justify-end">
+            <button onClick={addStop} className="flex items-center gap-1 py-2 px-3 rounded-lg text-xs font-bold text-zinc-500 hover:text-white hover:bg-zinc-800 transition-all">
+              <Plus size={14} /> Add Stop
+            </button>
+            {/* Removed GO button - auto triggers now */}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
