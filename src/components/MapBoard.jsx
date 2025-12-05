@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import Map, { Source, Layer, Marker, NavigationControl, GeolocateControl } from 'react-map-gl';
+// ⚡ FIX: Renamed 'Map' to 'MapGL' to avoid conflict with JS 'new Map()'
+import MapGL, { Source, Layer, Marker, NavigationControl } from 'react-map-gl'; // Removed GeolocateControl
 import { supabase } from '../supabaseClient';
 import RouteCreator from './RouteCreator';
 import NavigationHUD from './NavigationHUD';
@@ -17,6 +18,9 @@ export default function MapBoard({
   onNavigationStarted, 
   onRouteOptionsUpdate, 
   onNavigationActive, 
+  triggerSave,
+  onSaveComplete,
+  onSavingChange, 
   session 
 }) {
   const mapRef = useRef(null);
@@ -24,6 +28,7 @@ export default function MapBoard({
     longitude: 80.2707, latitude: 13.0827, zoom: 12
   });
 
+  const [myLocation, setMyLocation] = useState(null);
   const [points, setPoints] = useState([]); 
   
   // State
@@ -56,26 +61,56 @@ export default function MapBoard({
   const timerRef = useRef(null);
   const startTimeRef = useRef(null);
 
-  // Fix: Keep Ref in sync
-  useEffect(() => {
-    navStepsRef.current = navSteps;
-  }, [navSteps]);
+  // --- 1. INITIALIZATION & RESETS ---
 
-  // ⚡ FIX: RESET LISTENER
-  // When parent passes null props (Reset), clear local state
   useEffect(() => {
-    if (!routeWaypoints && !viewingRoute) {
-         // Don't clear points here immediately to avoid flickering during searches
-         // Instead rely on explicit actions or the flyToLocation 'showMarker: false' signal
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { longitude, latitude } = pos.coords;
+          setMyLocation({ longitude, latitude });
+          if (!flyToLocation && !viewingRoute) {
+            setViewState(prev => ({ ...prev, longitude, latitude, zoom: 14 }));
+          }
+        },
+        (err) => console.error("Error fetching location:", err),
+        { enableHighAccuracy: true }
+      );
+    }
+  }, []);
+
+  useEffect(() => { navStepsRef.current = navSteps; }, [navSteps]);
+
+  // Sync Saving State
+  useEffect(() => {
+    if (onSavingChange) onSavingChange(isSaving);
+  }, [isSaving, onSavingChange]);
+
+  // Reset Listener
+  useEffect(() => {
+    if (!routeWaypoints && !directNavDestination && !viewingRoute) {
+         setPoints([]);
+         setRouteGeoJSON(null);
+         setAllRoutes([]);
+         setNavSteps([]);
+         setRouteStats(null);
+         if (onRouteOptionsUpdate) onRouteOptionsUpdate(null);
          
          if (isRecording) {
-             setIsRecording(false);
-             if (recordingIdRef.current) navigator.geolocation.clearWatch(recordingIdRef.current);
+             stopRecording();
          }
     }
-  }, [routeWaypoints, viewingRoute]); 
+  }, [routeWaypoints, directNavDestination, viewingRoute]); 
 
-  // --- SYNC WITH PARENT UI ---
+  // Save Listener
+  useEffect(() => {
+    if (triggerSave && routeGeoJSON) {
+        setIsSaving(true);
+        if (onSaveComplete) onSaveComplete(); 
+    }
+  }, [triggerSave, routeGeoJSON]);
+
+  // Sync UI
   useEffect(() => {
     if (allRoutes.length > 0 && onRouteOptionsUpdate) {
         onRouteOptionsUpdate({
@@ -86,7 +121,7 @@ export default function MapBoard({
     }
   }, [selectedRouteIdx, allRoutes]);
 
-  // --- MAP UPDATE EFFECT ---
+  // Map Update
   useEffect(() => {
     if (allRoutes.length > 0 && allRoutes[selectedRouteIdx]) {
         const route = allRoutes[selectedRouteIdx];
@@ -95,16 +130,15 @@ export default function MapBoard({
     }
   }, [selectedRouteIdx, allRoutes]);
 
-  // --- CORE FUNCTIONS ---
+  // --- 2. CORE FUNCTIONS ---
 
   const fetchRoutes = async (coords) => {
     const coordString = coords.map(p => `${p[0]},${p[1]}`).join(';');
     const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordString}?geometries=geojson&overview=full&steps=true&alternatives=true&access_token=${MAPBOX_TOKEN}`;
-    
     try {
       const response = await fetch(url);
       const json = await response.json();
-      if (!json.routes || json.routes.length === 0) return;
+      if (!json.routes || json.routes.length === 0) return false;
       
       const options = json.routes.map((route, index) => {
         const line = turf.lineString(route.geometry.coordinates);
@@ -118,19 +152,15 @@ export default function MapBoard({
         if (sinuosity > 5) sinuosity = 5;
         
         let vibe = 'Straight';
-        if (sinuosity > 1.2) vibe = 'Curvy';
-        if (sinuosity > 1.5) vibe = 'Twisty';
+        if (sinuosity > 1.1) vibe = 'Curvy';
+        if (sinuosity > 1.3) vibe = 'Twisty';
+        if (sinuosity > 1.6) vibe = 'Noodle';
 
         return {
           id: index,
           geometry: route.geometry,
           steps: route.legs[0]?.steps || [],
-          stats: {
-            km: length.toFixed(1),
-            mins: mins,
-            sinuosity: sinuosity.toFixed(2),
-            vibe: vibe
-          },
+          stats: { km: length.toFixed(1), mins, sinuosity: sinuosity.toFixed(2), vibe },
           score: { time: mins, dist: length, fun: sinuosity }
         };
       });
@@ -138,6 +168,7 @@ export default function MapBoard({
       const fastestIdx = options.reduce((iMin, x, i, arr) => x.score.time < arr[iMin].score.time ? i : iMin, 0);
       const shortestIdx = options.reduce((iMin, x, i, arr) => x.score.dist < arr[iMin].score.dist ? i : iMin, 0);
       const twistiestIdx = options.reduce((iMax, x, i, arr) => x.score.fun > arr[iMax].score.fun ? i : iMax, 0);
+      const straightestIdx = options.reduce((iMin, x, i, arr) => x.score.fun < arr[iMin].score.fun ? i : iMin, 0);
 
       options.forEach((opt, idx) => {
           if (idx === fastestIdx) opt.tag = "Fastest";
@@ -152,8 +183,8 @@ export default function MapBoard({
 
       setAllRoutes(options);
       setSelectedRouteIdx(fastestIdx); 
-      
-    } catch (err) { console.error("Route error", err); }
+      return true;
+    } catch (err) { console.error("Route error", err); return false; }
   };
 
   const toggleRecording = () => {
@@ -164,15 +195,9 @@ export default function MapBoard({
   const startRecording = (isNavigating = false) => {
     setIsRecording(true);
     setRecordedPath([]);
-    
     if (!isNavigating) {
-      setPoints([]);
-      setRouteGeoJSON(null);
-      setNavSteps([]);
-      setAllRoutes([]);
-      if (onRouteOptionsUpdate) onRouteOptionsUpdate(null);
+      setPoints([]); setRouteGeoJSON(null); setNavSteps([]); setAllRoutes([]); if(onRouteOptionsUpdate) onRouteOptionsUpdate(null); setRouteStats(null);
     }
-    
     setLiveStats({ speed: 0, distance: 0, duration: 0 });
     startTimeRef.current = Date.now();
     timerRef.current = setInterval(() => {
@@ -185,7 +210,7 @@ export default function MapBoard({
         const { latitude, longitude, speed } = pos.coords;
         const currentSpeedKmh = speed ? Math.round(speed * 3.6) : 0; 
         const newPoint = { lng: longitude, lat: latitude, speed: currentSpeedKmh, timestamp: Date.now() };
-
+        setMyLocation({ latitude, longitude });
         setRecordedPath(prev => {
           let distAdded = 0;
           if (prev.length > 0) {
@@ -200,8 +225,6 @@ export default function MapBoard({
           setLiveStats(s => ({ ...s, speed: currentSpeedKmh, distance: s.distance + distAdded }));
           return [...prev, newPoint];
         });
-
-        // Navigation Logic using Ref
         const steps = navStepsRef.current;
         if (steps.length > 0) {
            const nextStep = steps[Math.min(steps.length - 1, currentStepIndex + 1)];
@@ -214,9 +237,8 @@ export default function MapBoard({
                setCurrentStepIndex(prev => Math.min(prev + 1, steps.length - 1));
                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
              }
-           }
+           } else { setDistanceToNextStep(0); }
         }
-        
         mapRef.current?.flyTo({ center: [longitude, latitude], zoom: 18, pitch: 60, bearing: pos.coords.heading || 0 });
       },
       (err) => console.error("Recording error:", err),
@@ -236,13 +258,10 @@ export default function MapBoard({
     const geometry = { type: 'LineString', coordinates };
     const line = turf.lineString(coordinates);
     const length = turf.length(line, { units: 'kilometers' });
-    
-    let sinuosity = 1.0; let vibe = "Straight";
-    // Sinuosity logic (omitted for brevity, same as before)
-    
     const speeds = recordedPath.map(p => p.speed);
     const maxSpeed = Math.max(...speeds);
     const avgSpeed = speeds.reduce((a, b) => a + b, 0) / speeds.length;
+    let sinuosity = 1.0; let vibe = "Recorded";
 
     setRouteGeoJSON({ type: 'Feature', geometry });
     setRouteStats({ 
@@ -256,7 +275,58 @@ export default function MapBoard({
     setIsSaving(true);
   };
 
-  // --- EFFECTS ---
+  const handleSaveRoute = async (details) => {
+    if (!routeGeoJSON) return;
+    let stats = routeStats; 
+    if (!stats && allRoutes.length > 0 && allRoutes[selectedRouteIdx]) {
+        stats = {
+            km: allRoutes[selectedRouteIdx].stats.km,
+            mins: allRoutes[selectedRouteIdx].stats.mins,
+            maxSpeed: 0,
+            avgSpeed: 0
+        };
+    }
+    const payload = {
+      name: details.name, 
+      vibe: details.vibe, 
+      surface: details.surface, 
+      path: routeGeoJSON.geometry, 
+      difficulty: 1, 
+      created_by: session?.user?.id,
+      distance_km: stats ? parseFloat(stats.km) : 0,
+      duration_mins: stats ? stats.mins : 0,
+      max_speed: stats?.maxSpeed ? parseInt(stats.maxSpeed) : 0,
+      avg_speed: stats?.avgSpeed ? parseInt(stats.avgSpeed) : 0
+    };
+    const { error } = await supabase.from('routes').insert(payload);
+    if (error) alert('Error saving!');
+    else { 
+        alert('Route Saved!'); 
+        setIsSaving(false); 
+        setPoints([]); 
+        setAllRoutes([]); 
+        if(onRouteOptionsUpdate) onRouteOptionsUpdate(null); 
+        setRecordedPath([]); 
+        setRouteStats(null);
+    }
+  };
+
+  const handleStartNavigationTo = (destCoords) => {
+      navigator.geolocation.getCurrentPosition((pos) => {
+          const currentLoc = [pos.coords.longitude, pos.coords.latitude];
+          const newWaypoints = [currentLoc, destCoords];
+          setPoints(newWaypoints);
+          fetchRoutes(newWaypoints).then((success) => { if (success) startRecording(true); });
+      }, (err) => alert("Enable GPS."));
+  };
+
+  const formatTime = (seconds) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return `${h > 0 ? h + ':' : ''}${m < 10 && h > 0 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
   useEffect(() => {
     if (directNavDestination) {
       const targetCoords = (points.length > 0) ? points[points.length-1] : directNavDestination.coords;
@@ -265,7 +335,6 @@ export default function MapBoard({
     }
   }, [directNavDestination]);
 
-  // Radar ... (Keeping existing logic)
   useEffect(() => {
     if (isRadarActive && session) {
       const connectToRadar = async () => {
@@ -300,6 +369,7 @@ export default function MapBoard({
     const watchId = navigator.geolocation.watchPosition((pos) => {
         const { latitude, longitude, heading } = pos.coords;
         myLocationRef.current = { lat: latitude, lng: longitude };
+        setMyLocation({ latitude, longitude });
         channel.track({ user: session.user.email, lat: latitude, lng: longitude, heading: heading || 0, online_at: new Date().toISOString() });
       }, (err) => console.error(err), { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
     return () => navigator.geolocation.clearWatch(watchId);
@@ -307,19 +377,9 @@ export default function MapBoard({
   
   useEffect(() => {
     if (flyToLocation && mapRef.current) {
-      mapRef.current.flyTo({ 
-          center: flyToLocation.coords, 
-          zoom: flyToLocation.zoom || 14, 
-          duration: 2000 
-      });
-      
-      // ⚡ FIX: If showMarker is explicitly false (Reset), clear the map points
+      mapRef.current.flyTo({ center: flyToLocation.coords, zoom: flyToLocation.zoom || 14, duration: 2000 });
       if (flyToLocation.showMarker === false) {
-          setPoints([]);
-          setRouteGeoJSON(null);
-          setAllRoutes([]);
-          setNavSteps([]);
-          if (onRouteOptionsUpdate) onRouteOptionsUpdate(null);
+          setPoints([]); setRouteGeoJSON(null); setAllRoutes([]); setNavSteps([]); if (onRouteOptionsUpdate) onRouteOptionsUpdate(null);
       }
     }
   }, [flyToLocation]);
@@ -341,6 +401,7 @@ export default function MapBoard({
           try {
             const pos = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
             finalCoords.push([pos.coords.longitude, pos.coords.latitude]);
+            setMyLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
           } catch (e) { alert("Enable GPS."); return; }
         } else {
           finalCoords.push(routeWaypoints[0].coords);
@@ -361,9 +422,7 @@ export default function MapBoard({
   }, [routeWaypoints]);
 
   useEffect(() => {
-    if (onNavigationActive) {
-      onNavigationActive(isRecording);
-    }
+    if (onNavigationActive) onNavigationActive(isRecording);
   }, [isRecording]);
 
   const handleMapClick = async (event) => {
@@ -374,34 +433,9 @@ export default function MapBoard({
     if (newPoints.length >= 2) fetchRoutes(newPoints);
   };
 
-  const handleSaveRoute = async (details) => {
-    if (!routeGeoJSON) return;
-    const { error } = await supabase.from('routes').insert({
-      name: details.name, vibe: details.vibe, surface: details.surface, path: routeGeoJSON.geometry, difficulty: 1, created_by: session?.user?.id 
-    });
-    if (error) alert('Error saving!');
-    else { alert('Route Saved!'); setIsSaving(false); setPoints([]); setAllRoutes([]); if(onRouteOptionsUpdate) onRouteOptionsUpdate(null); setRecordedPath([]); }
-  };
-
-  const handleStartNavigationTo = (destCoords) => {
-      navigator.geolocation.getCurrentPosition((pos) => {
-          const currentLoc = [pos.coords.longitude, pos.coords.latitude];
-          const newWaypoints = [currentLoc, destCoords];
-          setPoints(newWaypoints);
-          fetchRoutes(newWaypoints).then(() => startRecording(true));
-      }, (err) => alert("Enable GPS."));
-  };
-
-  const formatTime = (seconds) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    return `${h > 0 ? h + ':' : ''}${m < 10 && h > 0 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
-  };
-
   return (
     <div className="w-full h-full absolute top-0 left-0 z-0">
-      <Map
+      <MapGL
         ref={mapRef}
         {...viewState}
         onMove={evt => setViewState(evt.viewState)}
@@ -411,7 +445,7 @@ export default function MapBoard({
         mapboxAccessToken={MAPBOX_TOKEN}
         cursor={isRecording ? 'default' : 'crosshair'}
       >
-        <GeolocateControl position="bottom-right" style={{marginBottom: '100px', marginRight: '10px'}} />
+        {/* ⚡ FIX: Removed GeolocateControl, Kept NavigationControl */}
         <NavigationControl position="bottom-right" style={{marginBottom: '100px', marginRight: '10px'}} showCompass={false} />
 
         {isRecording && navSteps.length > 0 && <NavigationHUD instructions={navSteps} currentStepIndex={currentStepIndex} distanceToNext={distanceToNextStep} onStopNavigation={stopRecording} />}
@@ -444,14 +478,12 @@ export default function MapBoard({
         })}
         {points.map((p, i) => <Marker key={i} longitude={p[0]} latitude={p[1]} color={i === 0 ? "#4ade80" : "#ef4444"} />)}
         {isRecording && recordedPath.length > 1 && <Source id="recording-line" type="geojson" data={{ type: 'Feature', geometry: { type: 'LineString', coordinates: recordedPath.map(p=>[p.lng, p.lat]) }}}><Layer id="recording-layer" type="line" paint={{ 'line-color': '#ef4444', 'line-width': 4, 'line-opacity': 1, 'line-dasharray': [2, 1] }} /></Source>}
-        
-        {/* ⚡ FIX: Conditionally render marker based on showMarker flag */}
         {flyToLocation && flyToLocation.showMarker !== false && (
-          <Marker longitude={flyToLocation.coords[0]} latitude={flyToLocation.coords[1]} color="white">
-            <div className="animate-bounce text-2xl">📍</div>
-          </Marker>
+          <Marker longitude={flyToLocation.coords[0]} latitude={flyToLocation.coords[1]} color="white"><div className="animate-bounce text-2xl">📍</div></Marker>
         )}
-        
+        {myLocation && (
+          <Marker longitude={myLocation.longitude} latitude={myLocation.latitude}><div className="relative"><div className="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow-lg"></div><div className="absolute -inset-1 bg-blue-500 rounded-full animate-ping opacity-50"></div></div></Marker>
+        )}
         {!isRecording && isRadarActive && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 bg-black/80 backdrop-blur rounded-full border border-zinc-700 shadow-xl z-50 animate-in slide-in-from-top-5">
             <div className={`w-2 h-2 rounded-full animate-pulse ${syncGroupName ? 'bg-purple-500' : 'bg-green-500'}`}></div>
@@ -479,7 +511,6 @@ export default function MapBoard({
           </div>
         )}
 
-        {/* ⚡ FIX: Moved buttons down to avoid overlap */}
         <div className="absolute top-48 right-2 z-10 flex flex-col gap-2">
           <button onClick={() => setIsRadarActive(!isRadarActive)} className={`p-3 rounded-lg shadow-xl border border-zinc-700 transition-all ${isRadarActive ? 'bg-purple-600 text-white animate-pulse' : 'bg-black text-zinc-400'}`}>
             {isRadarActive ? <Radio size={20} className="animate-spin-slow" /> : <Users size={20} />}
@@ -490,7 +521,7 @@ export default function MapBoard({
         </div>
 
         {isSaving && <RouteCreator initialVibe={allRoutes[selectedRouteIdx]?.stats.vibe.toLowerCase()} onSave={handleSaveRoute} onCancel={() => setIsSaving(false)} />}
-      </Map>
+      </MapGL>
     </div>
   );
 }

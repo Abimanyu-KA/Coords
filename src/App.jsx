@@ -20,6 +20,7 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false);
   const [showGroups, setShowGroups] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
+  const [isSavingRoute, setIsSavingRoute] = useState(false); 
   
   // Map State
   const [flyToLocation, setFlyToLocation] = useState(null);
@@ -29,11 +30,11 @@ export default function App() {
   
   const [currentRouteOptions, setCurrentRouteOptions] = useState(null);
   const [directNavDestination, setDirectNavDestination] = useState(null);
-  
+  const [triggerSaveRoute, setTriggerSaveRoute] = useState(false); 
+
   // Search Box Config
   const [searchInitialMode, setSearchInitialMode] = useState('single');
   const [searchInitialDest, setSearchInitialDest] = useState(null);
-  
   const [resetKey, setResetKey] = useState(0);
 
   const [dbConnected, setDbConnected] = useState(false);
@@ -51,46 +52,88 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ⚡ FIX: HARD RESET FUNCTION (Home Button)
+  // ⚡ HARD RESET FUNCTION (Home Button) - Centers on USER
   const handleResetApp = () => {
     console.log("🏠 Home Reset Triggered");
-    
-    // 1. Fly Map back to Chennai (Home Base) - BUT DON'T DROP A PIN
-    setFlyToLocation({ 
-        coords: [80.2707, 13.0827], 
-        zoom: 12,
-        showMarker: false // <--- ⚡ Flag to tell MapBoard not to render a pin
-    });
 
-    // 2. Clear All Selection State
+    // 1. Clear Data & UI First
     setSelectedPlace(null);
     setRouteWaypoints(null);
     setViewingRoute(null);
     setCurrentRouteOptions(null);
     setDirectNavDestination(null);
     
-    // 3. Reset UI Modes
     setSearchInitialMode('single');
     setSearchInitialDest(null);
     setResetKey(prev => prev + 1); 
     
-    // 4. Close All Panels
     setShowFeed(false);
     setShowProfile(false);
     setShowGroups(false);
     setShowSearch(false);
     
-    // 5. Force Exit Navigation
     setIsNavigating(false); 
+    setTriggerSaveRoute(false);
+    setIsSavingRoute(false);
+
+    // 2. Fly to Current Location (Smart Reset)
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setFlyToLocation({ 
+                    coords: [pos.coords.longitude, pos.coords.latitude], 
+                    zoom: 15, 
+                    showMarker: false // Don't drop a pin, just fly there
+                });
+            }, 
+            (err) => {
+                console.error("Reset GPS Error:", err);
+                // Fallback if GPS fails
+                setFlyToLocation({ 
+                    coords: [80.2707, 13.0827], 
+                    zoom: 12,
+                    showMarker: false 
+                });
+            },
+            { enableHighAccuracy: true }
+        );
+    } else {
+        setFlyToLocation({ 
+            coords: [80.2707, 13.0827], 
+            zoom: 12,
+            showMarker: false 
+        });
+    }
   };
 
+  // Clear PlaceCard when Navigation Starts
   useEffect(() => {
     if (isNavigating) {
       setSelectedPlace(null);
       setCurrentRouteOptions(null);
       setShowSearch(false);
+      setIsSavingRoute(false);
     }
   }, [isNavigating]);
+
+  const handleViewSavedRoute = (route) => {
+      setViewingRoute(route);
+      setShowFeed(false);
+      setCurrentRouteOptions({
+          options: [{
+              id: 0,
+              tag: route.vibe === 'scenic' ? 'DRIFT' : route.vibe === 'twisty' ? 'DRIFT' : 'VECTOR',
+              stats: { 
+                  km: route.distance_km?.toFixed(1) || '?', 
+                  mins: route.duration_mins || '?', 
+                  sinuosity: '1.0', 
+                  vibe: route.vibe 
+              }
+          }],
+          selectedId: 0,
+          onSelect: () => {} 
+      });
+  };
 
   if (loading) return <div className="h-screen w-screen bg-black flex items-center justify-center text-white">Initializing...</div>;
   if (!session) return <Auth />;
@@ -106,10 +149,12 @@ export default function App() {
         onNavigationStarted={() => setDirectNavDestination(null)}
         onRouteOptionsUpdate={(options) => setCurrentRouteOptions(options)}
         onNavigationActive={(isActive) => setIsNavigating(isActive)} 
+        triggerSave={triggerSaveRoute}
+        onSaveComplete={() => setTriggerSaveRoute(false)}
+        onSavingChange={(isSaving) => setIsSavingRoute(isSaving)} 
         session={session}
       /> 
 
-      {/* BRANDING */}
       <div className={`absolute z-20 transition-all duration-700 ease-in-out transform -translate-x-1/2 ${
           isNavigating 
             ? 'bottom-8 left-1/2 opacity-60 scale-75' 
@@ -120,9 +165,7 @@ export default function App() {
                 <Compass className={`text-white w-5 h-5 ${dbConnected ? 'animate-pulse text-green-400' : ''}`} />
                 <h1 className="text-base font-black tracking-tighter text-white">COORDS.</h1>
             </div>
-            {!isNavigating && (
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]"></div>
-            )}
+            {!isNavigating && <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]"></div>}
          </div>
       </div>
 
@@ -165,7 +208,7 @@ export default function App() {
       )}
 
       {/* PLACE CARD */}
-      {!isNavigating && (selectedPlace || currentRouteOptions) && (
+      {!isNavigating && !isSavingRoute && (selectedPlace || currentRouteOptions) && (
         <div className="pointer-events-auto">
           <PlaceCard 
             place={selectedPlace}
@@ -175,12 +218,17 @@ export default function App() {
                 setCurrentRouteOptions(null);
                 setRouteWaypoints(null);
             }}
+            
             onDirectionsClick={() => {
               setSearchInitialMode('route');
               setSearchInitialDest(selectedPlace);
-              setSelectedPlace(null); 
               setShowSearch(true);    
+              setRouteWaypoints([
+                  { text: 'Current Location', isCurrent: true },
+                  { coords: selectedPlace.coords }
+              ]);
             }}
+            
             onStartNavigation={() => {
               if (currentRouteOptions) {
                  setDirectNavDestination({ coords: routeWaypoints[routeWaypoints.length-1].coords }); 
@@ -188,23 +236,25 @@ export default function App() {
                  setDirectNavDestination(selectedPlace);
               }
             }}
+            onSaveRoute={() => setTriggerSaveRoute(true)}
           />
         </div>
       )}
 
       {/* PANELS & NAVBAR */}
-      {!isNavigating && (
+      {/* ⚡ FIX: Navbar now stays visible even if PlaceCard is open (overlapped gracefully) */}
+      {!isNavigating && !isSavingRoute && (
         <>
-          <FeedPanel isOpen={showFeed} onClose={() => setShowFeed(false)} onRouteSelect={(route) => { setViewingRoute(route); setShowFeed(false); }} />
+          <FeedPanel isOpen={showFeed} onClose={() => setShowFeed(false)} onRouteSelect={handleViewSavedRoute} session={session} />
           <ProfilePanel isOpen={showProfile} onClose={() => setShowProfile(false)} session={session} />
           <GroupPanel isOpen={showGroups} onClose={() => setShowGroups(false)} session={session} />
           
           <Navbar 
             onFeedClick={() => setShowFeed(!showFeed)} 
-            onGroupClick={() => setShowGroups(!showGroups)}
-            onHomeClick={handleResetApp}
-            isFeedOpen={showFeed}
-            isGroupOpen={showGroups}
+            onGroupClick={() => setShowGroups(!showGroups)} 
+            onHomeClick={handleResetApp} 
+            isFeedOpen={showFeed} 
+            isGroupOpen={showGroups} 
           />
         </>
       )}
