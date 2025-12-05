@@ -7,7 +7,8 @@ import Auth from './components/Auth';
 import ProfilePanel from './components/ProfilePanel';
 import GroupPanel from './components/GroupPanel';
 import PlaceCard from './components/PlaceCard';
-import { Compass } from 'lucide-react';
+// ⚡ FIX: Added 'User' to the imports
+import { Compass, User } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 export default function App() {
@@ -39,6 +40,7 @@ export default function App() {
 
   const [dbConnected, setDbConnected] = useState(false);
 
+  // 1. Init Auth
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -52,11 +54,33 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ⚡ HARD RESET FUNCTION (Home Button) - Centers on USER
+  // ⚡ HARD RESET FUNCTION (Home Button)
   const handleResetApp = () => {
     console.log("🏠 Home Reset Triggered");
+    
+    // Fly to Current Location
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setFlyToLocation({ 
+                    coords: [pos.coords.longitude, pos.coords.latitude], 
+                    zoom: 15, 
+                    showMarker: false 
+                });
+            }, 
+            (err) => console.error("Reset GPS Error:", err),
+            { enableHighAccuracy: true }
+        );
+    } else {
+         // Fallback
+         setFlyToLocation({ 
+            coords: [80.2707, 13.0827], 
+            zoom: 12, 
+            showMarker: false 
+        });
+    }
 
-    // 1. Clear Data & UI First
+    // Clear State
     setSelectedPlace(null);
     setRouteWaypoints(null);
     setViewingRoute(null);
@@ -75,38 +99,9 @@ export default function App() {
     setIsNavigating(false); 
     setTriggerSaveRoute(false);
     setIsSavingRoute(false);
-
-    // 2. Fly to Current Location (Smart Reset)
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-            (pos) => {
-                setFlyToLocation({ 
-                    coords: [pos.coords.longitude, pos.coords.latitude], 
-                    zoom: 15, 
-                    showMarker: false // Don't drop a pin, just fly there
-                });
-            }, 
-            (err) => {
-                console.error("Reset GPS Error:", err);
-                // Fallback if GPS fails
-                setFlyToLocation({ 
-                    coords: [80.2707, 13.0827], 
-                    zoom: 12,
-                    showMarker: false 
-                });
-            },
-            { enableHighAccuracy: true }
-        );
-    } else {
-        setFlyToLocation({ 
-            coords: [80.2707, 13.0827], 
-            zoom: 12,
-            showMarker: false 
-        });
-    }
   };
 
-  // Clear PlaceCard when Navigation Starts
+  // Clear UI when Navigation Starts
   useEffect(() => {
     if (isNavigating) {
       setSelectedPlace(null);
@@ -116,6 +111,7 @@ export default function App() {
     }
   }, [isNavigating]);
 
+  // Helper for viewing saved routes
   const handleViewSavedRoute = (route) => {
       setViewingRoute(route);
       setShowFeed(false);
@@ -151,10 +147,14 @@ export default function App() {
         onNavigationActive={(isActive) => setIsNavigating(isActive)} 
         triggerSave={triggerSaveRoute}
         onSaveComplete={() => setTriggerSaveRoute(false)}
+        
+        // ⚡ Update isSavingRoute so we can hide the PlaceCard overlap
         onSavingChange={(isSaving) => setIsSavingRoute(isSaving)} 
+        
         session={session}
       /> 
 
+      {/* BRANDING */}
       <div className={`absolute z-20 transition-all duration-700 ease-in-out transform -translate-x-1/2 ${
           isNavigating 
             ? 'bottom-8 left-1/2 opacity-60 scale-75' 
@@ -206,8 +206,21 @@ export default function App() {
           </div>
         </div>
       )}
+      
+      {/* PROFILE BUTTON */}
+      {!isNavigating && (
+        <div className="absolute top-6 right-6 z-20 pointer-events-auto">
+            <button 
+                onClick={() => setShowProfile(true)}
+                className="p-3 bg-black/40 backdrop-blur-xl rounded-full border border-white/5 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all shadow-2xl"
+            >
+                <User size={20} />
+            </button>
+        </div>
+      )}
 
       {/* PLACE CARD */}
+      {/* ⚡ Logic: Hide if Navigating OR Saving Route (to prevent overlap) */}
       {!isNavigating && !isSavingRoute && (selectedPlace || currentRouteOptions) && (
         <div className="pointer-events-auto">
           <PlaceCard 
@@ -218,7 +231,6 @@ export default function App() {
                 setCurrentRouteOptions(null);
                 setRouteWaypoints(null);
             }}
-            
             onDirectionsClick={() => {
               setSearchInitialMode('route');
               setSearchInitialDest(selectedPlace);
@@ -228,7 +240,6 @@ export default function App() {
                   { coords: selectedPlace.coords }
               ]);
             }}
-            
             onStartNavigation={() => {
               if (currentRouteOptions) {
                  setDirectNavDestination({ coords: routeWaypoints[routeWaypoints.length-1].coords }); 
@@ -242,7 +253,7 @@ export default function App() {
       )}
 
       {/* PANELS & NAVBAR */}
-      {/* ⚡ FIX: Navbar now stays visible even if PlaceCard is open (overlapped gracefully) */}
+      {/* ⚡ Logic: Navbar visible unless Navigating or Saving */}
       {!isNavigating && !isSavingRoute && (
         <>
           <FeedPanel isOpen={showFeed} onClose={() => setShowFeed(false)} onRouteSelect={handleViewSavedRoute} session={session} />
