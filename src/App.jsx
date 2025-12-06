@@ -7,7 +7,7 @@ import Auth from './components/Auth';
 import ProfilePanel from './components/ProfilePanel';
 import GroupPanel from './components/GroupPanel';
 import PlaceCard from './components/PlaceCard';
-// ⚡ FIX: Added 'User' to the imports
+// ⚡ FIX: Added 'User' to imports
 import { Compass, User } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
@@ -162,8 +162,13 @@ export default function App() {
       }`}>
          <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-full border border-white/5 shadow-2xl ring-1 ring-white/5">
-                <Compass className={`text-white w-5 h-5 ${dbConnected ? 'animate-pulse text-green-400' : ''}`} />
-                <h1 className="text-base font-black tracking-tighter text-white">COORDS.</h1>
+                <img src="/logo.png" alt="Logo" className="w-6 h-6 object-contain" />
+                <h1 
+                  className="text-lg font-black tracking-tighter text-white" 
+                  style={{ fontFamily: '"Barlow", sans-serif' }}
+                >
+                  COORDS.
+                </h1>
             </div>
             {!isNavigating && <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]"></div>}
          </div>
@@ -206,7 +211,7 @@ export default function App() {
           </div>
         </div>
       )}
-      
+
       {/* PROFILE BUTTON */}
       {!isNavigating && (
         <div className="absolute top-6 right-6 z-20 pointer-events-auto">
@@ -219,8 +224,8 @@ export default function App() {
         </div>
       )}
 
-      {/* PLACE CARD */}
-      {/* ⚡ Logic: Hide if Navigating OR Saving Route (to prevent overlap) */}
+      {/* PLACE CARD - Hidden if Navigating OR Saving Route */}
+      {/* ⚡ FIX: Added !isSavingRoute check to prevent overlap */}
       {!isNavigating && !isSavingRoute && (selectedPlace || currentRouteOptions) && (
         <div className="pointer-events-auto">
           <PlaceCard 
@@ -231,15 +236,20 @@ export default function App() {
                 setCurrentRouteOptions(null);
                 setRouteWaypoints(null);
             }}
+            
             onDirectionsClick={() => {
               setSearchInitialMode('route');
               setSearchInitialDest(selectedPlace);
               setShowSearch(true);    
+              
+              // Auto-trigger route calculation from Current Location
               setRouteWaypoints([
                   { text: 'Current Location', isCurrent: true },
                   { coords: selectedPlace.coords }
               ]);
+              // Keep selectedPlace active so transition is smooth
             }}
+            
             onStartNavigation={() => {
               if (currentRouteOptions) {
                  setDirectNavDestination({ coords: routeWaypoints[routeWaypoints.length-1].coords }); 
